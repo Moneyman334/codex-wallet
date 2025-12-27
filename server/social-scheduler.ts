@@ -1,0 +1,308 @@
+import cron from 'node-cron';
+import { TwitterApi } from 'twitter-api-v2';
+import { storage } from './storage';
+
+interface TwitterCredentials {
+  appKey: string;
+  appSecret: string;
+  accessToken: string;
+  accessSecret: string;
+}
+
+class SocialMediaScheduler {
+  private isRunning: boolean = false;
+  private cronTasks: ReturnType<typeof cron.schedule>[] = [];
+
+  async postToTwitter(credentials: TwitterCredentials, content: string, accountUsername: string): Promise<{ success: boolean; postUrl?: string; externalPostId?: string; error?: string }> {
+    try {
+      const client = new TwitterApi({
+        appKey: credentials.appKey,
+        appSecret: credentials.appSecret,
+        accessToken: credentials.accessToken,
+        accessSecret: credentials.accessSecret,
+      });
+
+      const tweet = await client.v2.tweet(content);
+      
+      if (tweet.data?.id) {
+        const username = accountUsername.startsWith('@') ? accountUsername.slice(1) : accountUsername;
+        const postUrl = `https://twitter.com/${username}/status/${tweet.data.id}`;
+        return { success: true, postUrl, externalPostId: tweet.data.id };
+      }
+      
+      return { success: false, error: 'Failed to get tweet ID' };
+    } catch (error: any) {
+      console.error('Twitter posting error:', error);
+      return { 
+        success: false, 
+        error: error?.message || 'Unknown error occurred' 
+      };
+    }
+  }
+
+  async processScheduledPosts() {
+    if (this.isRunning) {
+      console.log('⏭️  Skipping post processing - already running');
+      return;
+    }
+
+    this.isRunning = true;
+    console.log('🚀 Processing scheduled posts...');
+
+    try {
+      const now = new Date();
+      const duePosts = await storage.getPostsDueForPublish(now);
+
+      console.log(`📋 Found ${duePosts.length} posts due for publishing`);
+
+      for (const post of duePosts) {
+        try {
+          if (!post.accountId || !post.userId) {
+            console.log(`⚠️  Skipping post ${post.id} - missing accountId or userId`);
+            await storage.updateScheduledPost(post.id, { status: 'failed' });
+            continue;
+          }
+
+          const account = await storage.getSocialAccount(post.accountId);
+          
+          if (!account || account.isActive !== 'true') {
+            console.log(`⚠️  Skipping post ${post.id} - account inactive or not found`);
+            await storage.updateScheduledPost(post.id, { status: 'failed' });
+            continue;
+          }
+
+          if (account.platform === 'twitter' || account.platform === 'x') {
+            if (!account.apiKey || !account.apiSecret || !account.accessToken || !account.accessTokenSecret) {
+              console.log(`⚠️  Skipping post ${post.id} - missing Twitter credentials`);
+              await storage.updateScheduledPost(post.id, { status: 'failed' });
+              await storage.createPostHistory({
+                userId: post.userId,
+                accountId: post.accountId,
+                scheduledPostId: post.id,
+                content: post.content,
+                platform: account.platform,
+                status: 'failed',
+                error: 'Missing Twitter API credentials'
+              });
+              continue;
+            }
+
+            const result = await this.postToTwitter(
+              {
+                appKey: account.apiKey,
+                appSecret: account.apiSecret,
+                accessToken: account.accessToken,
+                accessSecret: account.accessTokenSecret
+              },
+              post.content,
+              account.accountName
+            );
+
+            if (result.success) {
+              console.log(`✅ Successfully posted to Twitter: ${post.id}`);
+              
+              await storage.updateScheduledPost(post.id, { status: 'published' });
+              
+              await storage.createPostHistory({
+                userId: post.userId,
+                accountId: post.accountId,
+                scheduledPostId: post.id,
+                content: post.content,
+                platform: account.platform,
+                postUrl: result.postUrl,
+                externalPostId: result.externalPostId,
+                status: 'success'
+              });
+              
+              await storage.updateSocialAccount(account.id, {
+                lastPostedAt: new Date()
+              });
+              
+              // If this was an auto-post, schedule the next one
+              if (post.postType === 'auto') {
+                console.log('🔄 Auto-post successful, scheduling next auto-post in 3 hours...');
+                await this.createAutoScheduledPost(post.accountId, post.userId);
+              }
+            } else {
+              console.log(`❌ Failed to post to Twitter: ${post.id} - ${result.error}`);
+              
+              await storage.updateScheduledPost(post.id, { status: 'failed' });
+              
+              await storage.createPostHistory({
+                userId: post.userId,
+                accountId: post.accountId,
+                scheduledPostId: post.id,
+                content: post.content,
+                platform: account.platform,
+                status: 'failed',
+                error: result.error
+              });
+            }
+          } else if (account.platform === 'instagram') {
+            // Instagram API integration
+            if (!account.accessToken) {
+              console.log(`⚠️  Skipping post ${post.id} - missing Instagram credentials`);
+              await storage.updateScheduledPost(post.id, { status: 'failed' });
+              await storage.createPostHistory({
+                userId: post.userId,
+                accountId: post.accountId,
+                scheduledPostId: post.id,
+                content: post.content,
+                platform: account.platform,
+                status: 'failed',
+                error: 'Missing Instagram access token'
+              });
+              continue;
+            }
+
+            try {
+              // Instagram Graph API - Post creation
+              const instagramResponse = await fetch(
+                `https://graph.instagram.com/v18.0/${account.accountName}/media`,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    caption: post.content,
+                    access_token: account.accessToken,
+                  }),
+                }
+              );
+
+              if (instagramResponse.ok) {
+                const instagramData = await instagramResponse.json();
+                console.log(`✅ Successfully posted to Instagram: ${post.id}`);
+                
+                await storage.updateScheduledPost(post.id, { status: 'published' });
+                await storage.createPostHistory({
+                  userId: post.userId,
+                  accountId: post.accountId,
+                  scheduledPostId: post.id,
+                  content: post.content,
+                  platform: account.platform,
+                  externalPostId: instagramData.id,
+                  status: 'success'
+                });
+                
+                await storage.updateSocialAccount(account.id, {
+                  lastPostedAt: new Date()
+                });
+
+                if (post.postType === 'auto') {
+                  console.log('🔄 Auto-post successful, scheduling next auto-post in 3 hours...');
+                  await this.createAutoScheduledPost(post.accountId, post.userId);
+                }
+              } else {
+                const errorData = await instagramResponse.json();
+                throw new Error(errorData.error?.message || 'Instagram API error');
+              }
+            } catch (error: any) {
+              console.log(`❌ Failed to post to Instagram: ${post.id} - ${error.message}`);
+              await storage.updateScheduledPost(post.id, { status: 'failed' });
+              await storage.createPostHistory({
+                userId: post.userId,
+                accountId: post.accountId,
+                scheduledPostId: post.id,
+                content: post.content,
+                platform: account.platform,
+                status: 'failed',
+                error: error.message
+              });
+            }
+          } else {
+            console.log(`⚠️  Unsupported platform: ${account.platform}`);
+            await storage.updateScheduledPost(post.id, { status: 'failed' });
+          }
+        } catch (error) {
+          console.error(`Error processing post ${post.id}:`, error);
+          await storage.updateScheduledPost(post.id, { status: 'failed' });
+        }
+      }
+
+      console.log('✨ Finished processing scheduled posts');
+    } catch (error) {
+      console.error('Error in processScheduledPosts:', error);
+    } finally {
+      this.isRunning = false;
+    }
+  }
+
+  async createAutoScheduledPost(accountId: string, userId: string) {
+    try {
+      const account = await storage.getSocialAccount(accountId);
+      if (!account || account.isActive !== 'true') {
+        return;
+      }
+
+      const twitterMessages = [
+        '🚀 CODEX - THE DOMINANT BLOCKCHAIN PLATFORM with 55+ production features! Join the revolution. #Web3 #Crypto #Blockchain',
+        '💎 Experience divine auto-compound yields on CODEX. Your investments working 24/7! #DeFi #CryptoInvesting',
+        '🎮 House Vaults live on CODEX! Become the house and earn from platform profits. #CryptoGaming #PassiveIncome',
+        '⚡ Sentinel AI Trading Bot on CODEX: Advanced strategies for maximum returns. #CryptoTrading #AutomatedTrading',
+        '🌟 CODEX combines epic visuals with cutting-edge blockchain tech. The future is here! #NFT #CryptoArt',
+        '🔥 Multi-chain wallet integration on CODEX: ETH, BTC, SOL, and more! #MultiChain #CryptoWallet',
+        '💫 Create tokens and NFTs instantly with CODEX smart contract generators. #TokenCreator #NFTCreator',
+        '🎯 Join thousands building their empire on CODEX - THE DOMINANT PLATFORM. #CryptoCommunity #Web3Gaming'
+      ];
+
+      const instagramMessages = [
+        '🚀 Build your crypto empire with CODEX - 55+ features, unlimited possibilities!\n\n#CODEX #Web3 #Crypto #Blockchain #DeFi',
+        '💎 Auto-compound your earnings 24/7 on CODEX. The future of passive income is here!\n\n#CryptoInvesting #PassiveIncome #DeFi',
+        '🎮 Become the house! House Vaults on CODEX let you earn from platform profits.\n\n#CryptoGaming #GameFi #Web3Gaming',
+        '⚡ AI-powered trading bot executing strategies while you sleep. Welcome to CODEX!\n\n#CryptoTrading #AutomatedTrading #AI',
+        '🌟 Divine visuals meet cutting-edge blockchain technology on CODEX.\n\n#NFT #CryptoArt #DigitalArt',
+        '🔥 Multi-chain support: ETH, BTC, SOL, and more - all in one platform!\n\n#MultiChain #CryptoWallet #Web3',
+        '💫 Launch your token or NFT in minutes with our smart contract generators.\n\n#TokenCreator #NFTCreator #SmartContracts',
+        '🎯 Join the empire revolution! CODEX - where innovation meets opportunity.\n\n#CryptoCommunity #Web3 #Blockchain'
+      ];
+
+      const messages = account.platform === 'instagram' ? instagramMessages : twitterMessages;
+
+      const randomMessage = messages[Math.floor(Math.random() * messages.length)];
+      
+      const scheduledFor = new Date();
+      scheduledFor.setHours(scheduledFor.getHours() + 3);
+
+      await storage.createScheduledPost({
+        userId,
+        accountId,
+        content: randomMessage,
+        scheduledFor,
+        status: 'pending',
+        postType: 'auto'
+      });
+
+      console.log(`📅 Created auto-scheduled post for ${scheduledFor.toISOString()}`);
+    } catch (error) {
+      console.error('Error creating auto-scheduled post:', error);
+    }
+  }
+
+  start() {
+    console.log('🎬 Starting Social Media Scheduler...');
+    
+    const hourlyTask = cron.schedule('0 */3 * * *', async () => {
+      console.log('⏰ 3-hour cron job triggered');
+      await this.processScheduledPosts();
+    });
+    this.cronTasks.push(hourlyTask);
+
+    const minuteTask = cron.schedule('*/5 * * * *', async () => {
+      await this.processScheduledPosts();
+    });
+    this.cronTasks.push(minuteTask);
+
+    console.log('✅ Social Media Scheduler started successfully');
+    console.log('📅 Will post every 3 hours at: 00:00, 03:00, 06:00, 09:00, 12:00, 15:00, 18:00, 21:00');
+    console.log('🔍 Checking for due posts every 5 minutes');
+  }
+
+  stop() {
+    console.log('🛑 Stopping Social Media Scheduler...');
+    this.cronTasks.forEach(task => task.stop());
+    this.cronTasks = [];
+    console.log('✅ Social Media Scheduler stopped');
+  }
+}
+
+export const socialScheduler = new SocialMediaScheduler();

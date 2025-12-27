@@ -1,0 +1,94 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace "com.omniversesyndicate.codex"
+    compileSdk rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.omniversesyndicate.codex"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 12
+        versionName "1.1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        release {
+            // SECURITY: Use Google Play App Signing (recommended)
+            // Google manages the production signing key automatically
+            // Upload key can be configured via environment variables or local keystore
+            
+            // For local builds, set these environment variables:
+            // CODEX_KEYSTORE_FILE, CODEX_KEYSTORE_PASSWORD,
+            // CODEX_KEY_ALIAS, CODEX_KEY_PASSWORD
+            
+            def ksFile = System.getenv("CODEX_KEYSTORE_FILE") ?: project.findProperty("CODEX_KEYSTORE_FILE")
+            def ksPassword = System.getenv("CODEX_KEYSTORE_PASSWORD") ?: project.findProperty("CODEX_KEYSTORE_PASSWORD")
+            def ksKeyAlias = System.getenv("CODEX_KEY_ALIAS") ?: project.findProperty("CODEX_KEY_ALIAS")
+            def ksKeyPassword = System.getenv("CODEX_KEY_PASSWORD") ?: project.findProperty("CODEX_KEY_PASSWORD")
+            
+            if (ksFile && ksPassword && ksKeyAlias && ksKeyPassword) {
+                storeFile file(ksFile)
+                storePassword ksPassword
+                keyAlias ksKeyAlias
+                keyPassword ksKeyPassword
+            } else {
+                // Use debug signing for development builds
+                // Production builds will use Google Play App Signing
+                logger.warn("Release signing not configured. Using debug key. For production, enable Google Play App Signing.")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            // Only use signingConfig if properly configured, otherwise use debug
+            if (signingConfigs.release.storeFile != null) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    
+    packagingOptions {
+        pickFirst 'META-INF/proguard/androidx-*.pro'
+    }
+    
+    dependenciesInfo {
+        includeInBundle = false
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

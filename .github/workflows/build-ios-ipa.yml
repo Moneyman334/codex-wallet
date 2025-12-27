@@ -1,0 +1,71 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch: # Manual trigger via GitHub UI
+  push:
+    branches:
+      - main
+    paths:
+      - 'ios/**'
+      - 'client/**'
+      - 'package.json'
+      - 'capacitor.config.ts'
+
+jobs:
+  build:
+    name: Build iOS App
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build frontend
+        run: npm run build
+      
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      
+      - name: Sync Capacitor
+        run: |
+          npm install -g @capacitor/cli
+          npx cap sync ios
+      
+      - name: Build iOS App
+        run: |
+          cd ios/App
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -derivedDataPath build \
+            -archivePath build/App.xcarchive \
+            archive
+      
+      - name: Export IPA
+        run: |
+          cd ios/App
+          xcodebuild \
+            -archivePath build/App.xcarchive \
+            -exportOptionsPlist ../exportOptions.plist \
+            -exportPath build/ipa \
+            -allowProvisioningUpdates \
+            -exportFormat ipa
+      
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GetChaosPay.ipa
+          path: ios/App/build/ipa/App.ipa
+          retention-days: 30

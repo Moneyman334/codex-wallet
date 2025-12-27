@@ -1,0 +1,17 @@
+node_modules
+dist
+.DS_Store
+server/public
+vite.config.ts.*
+*.tar.gz
+
+# Android keystore files (SECURITY: Never commit these!)
+*.keystore
+*.jks
+
+# iOS build outputs
+ios/App/build/
+ios/App/Pods/
+DerivedData/
+*.xcarchive
+*.ipaattached_assets/

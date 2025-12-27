@@ -1,0 +1,62 @@
+name: Build Android AAB
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'client/**'
+      - 'android/**'
+      - 'capacitor.config.ts'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build web assets
+        run: npm run build
+      
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      
+      - name: Sync Capacitor
+        run: npx cap sync android
+      
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/codex-release-key.jks
+      
+      - name: Build Release AAB
+        working-directory: android
+        env:
+          CODEX_KEYSTORE_FILE: ${{ github.workspace }}/android/app/codex-release-key.jks
+          CODEX_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          CODEX_KEY_ALIAS: codex-key
+          CODEX_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew bundleRelease
+      
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-wallet-release
+          path: android/app/build/outputs/bundle/release/app-release.aab
+          retention-days: 30
