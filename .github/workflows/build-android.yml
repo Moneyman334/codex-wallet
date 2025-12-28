@@ -17,34 +17,31 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
       
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-      
-      - name: Install dependencies
-        run: npm ci
-      
-      - name: Build web assets
-        run: npm run build
-      
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
-      
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-      
-      - name: Sync Capacitor
-        run: npx cap sync android
-      
-      - name: Decode Keystore
-        run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > android/app/codex-release-key.jks
-          ls -la android/app/codex-release-key.jks
+         signingConfigs {
+        release {
+            def ksFile = System.getenv("CODEX_KEYSTORE_FILE")
+            def ksPassword = System.getenv("CODEX_KEYSTORE_PASSWORD")
+            def ksKeyAlias = System.getenv("CODEX_KEY_ALIAS")
+            def ksKeyPassword = System.getenv("CODEX_KEY_PASSWORD")
+            
+            if (ksFile) {
+                storeFile file(ksFile)
+                storePassword ksPassword
+                keyAlias ksKeyAlias
+                keyPassword ksKeyPassword
+                println "SIGNING: Using keystore at ${ksFile}"
+            } else {
+                println "SIGNING: No keystore configured"
+            }
+        }
+    }
+    buildTypes {
+        release {
+            signingConfig signingConfigs.release
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
       
       - name: Build Release AAB
         working-directory: android
